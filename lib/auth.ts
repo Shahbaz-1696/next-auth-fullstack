@@ -1,9 +1,11 @@
 import CredentialsProvider from "next-auth/providers/credentials";
 import db from "@/lib/db";
 import bcrypt from "bcrypt";
+import { z } from "zod";
 import { NextResponse } from "next/server";
 
 export const authOptions = {
+  trustHost: true,
   providers: [
     CredentialsProvider({
       name: "Credentials",
@@ -27,69 +29,61 @@ export const authOptions = {
           required: true,
         },
       },
+      // @ts-ignore
+      async authorize(credentials: any) {
+        const parsedCredentials = z
+          .object({
+            email: z.string().email(),
+            password: z.string().min(6),
+            username: z.string(),
+          })
+          .safeParse(credentials);
 
-      async authorize(credentials: {
-        username: string;
-        password: string;
-        email: string;
-      }) {
-        const hashedPassword = await bcrypt.hash(credentials.password, 10);
-        const existingUser = await db.user.findFirst({
-          where: {
-            username: credentials.username,
-          },
-        });
-        if (existingUser) {
-          const passwordValidation = await bcrypt.compare(
-            credentials.password,
-            existingUser.password
-          );
-          if (passwordValidation) {
-            return {
-              id: existingUser.id.toString(),
-              email: existingUser.email,
-              username: existingUser.email,
-            };
-          }
-          return null;
-        }
-
-        try {
-          const user = await db.user.create({
-            data: {
-              email: credentials.email,
-              username: credentials.username,
-              password: hashedPassword,
+        if (parsedCredentials.success) {
+          const { email, password, username } = parsedCredentials.data;
+          const hashedPassword = await bcrypt.hash(password, 10);
+          const existingUser = await db.user.findFirst({
+            where: {
+              email: email,
             },
           });
-
-          return {
-            id: user.id.toString(),
-            email: user.email,
-            username: user.username,
-          };
-        } catch (error) {
-          return NextResponse.json(
-            {
-              message: "Error in signing up",
-            },
-            {
-              status: 411,
+          if (existingUser) {
+            const passwordMatch = await bcrypt.compare(
+              password,
+              hashedPassword
+            );
+            if (passwordMatch) {
+              return NextResponse.json({
+                existingUser,
+              });
             }
-          );
+            console.log("Invalid Credentials");
+            return null;
+          }
+          try {
+            const user = await db.user.create({
+              data: {
+                email: email,
+                password: hashedPassword,
+                username: username,
+              },
+            });
+            return {
+              id: user.id,
+              email: user.email,
+              username: user.username,
+            };
+          } catch (error) {
+            console.log(error);
+          }
+          return null;
         }
       },
     }),
   ],
   secret: process.env.JWT_SECRET ?? "secret",
   callbacks: {
-    async session({
-      token,
-      session,
-    }: {
-      token: { sub: string };
-      session: { user: { id: string } };
-    }) {
+    async session({ token, session }: any) {
       session.user.id = token.sub;
       return session;
     },
